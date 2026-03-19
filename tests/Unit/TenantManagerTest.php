@@ -12,7 +12,7 @@ describe('TenantManager', function () {
 
     it('tenant ID set edilebilir', function () {
         $manager = new TenantManager();
-        $manager->setTenantId(42);
+        $manager->setTenantId(42, 'free');
         
         expect($manager->hasTenant())->toBeTrue();
         expect($manager->getTenantId())->toBe(42);
@@ -27,8 +27,8 @@ describe('TenantManager', function () {
     it('birden fazla kez set edildiğinde son değeri döner', function () {
         $manager = new TenantManager();
         
-        $manager->setTenantId(1);
-        $manager->setTenantId(99);
+        $manager->setTenantId(1, 'free');
+        $manager->setTenantId(99, 'pro');
         
         expect($manager->getTenantId())->toBe(99);
     });

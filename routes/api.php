@@ -1,18 +1,25 @@
 <?php
 
 use App\Http\Controllers\ProjectsController;
-use App\Http\Middleware\TenantIdentificationMiddleware;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
-// Route::get('/user', function (Request $request) {
-//     return $request->user();
-// })->middleware('auth:sanctum');
+/**
+ * Tenant-Aware Rate Limited API Routes
+ * 
+ * Her endpoint tenant.identify middleware'ı üzerinden geçer.
+ * Rate limiting policy'leri tier bazlı uygulanır:
+ * - tenant.read: GET endpoint'leri için (free: 60/min, pro: 300/min)
+ * - tenant.write: POST/PUT/DELETE endpoint'leri için (free: 20/min, pro: 100/min)
+ */
+Route::middleware(['tenant.identify'])->group(function () {
+    
+    // Okuma endpoint'i -> 'tenant.read' politikasına tabi
+    Route::get('/projects', [ProjectsController::class, 'index'])
+        ->name('projects.index')
+        ->middleware('throttle:tenant.read');
 
-
-Route::middleware([TenantIdentificationMiddleware::class])->group(function () {
-    // Controller'a ulaştığında TenantManager hazırdır.
-    // Global Scope (TenantScope) otomatik olarak devreye girer.
-    Route::get('/projects', [ProjectsController::class, 'index']);
-    Route::post('/projects', [ProjectsController::class, 'store']);
+    // Yazma endpoint'i -> 'tenant.write' politikasına tabi
+    Route::post('/projects', [ProjectsController::class, 'store'])
+        ->name('projects.store')
+        ->middleware('throttle:tenant.write');
 });

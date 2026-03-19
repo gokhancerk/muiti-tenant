@@ -16,6 +16,7 @@ return new class extends Migration
             $table->id();
             $table->string('name');
             $table->string('domain')->unique()->nullable(); // İleride Subdomain mimarisine geçiş için altyapı
+            $table->enum('tier', ['free', 'pro'])->default('free'); // Rate limiting policy tier
             $table->boolean('is_active')->default(true);
             $table->timestamps();
         });

@@ -132,7 +132,7 @@ describe('TenantScope - withoutGlobalScopes', function () {
 
     it('withoutGlobalScopes ile tüm projeler erişilebilir (admin senaryosu)', function () {
         // TenantManager'a bir tenant set et
-        app(TenantManager::class)->setTenantId($this->tenantA->id);
+        app(TenantManager::class)->setTenantId($this->tenantA->id, 'free');
 
         // Normal sorgu - sadece Tenant A projeleri
         $filtered = Project::all();

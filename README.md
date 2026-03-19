@@ -23,6 +23,143 @@ Bu proje, insan hatasını sistem tasarımı ile geçersiz kılmak (override) am
 
 ---
 
+## 🚦 Tenant-Aware Rate Limiting
+
+### Problem ve Amaç
+Shared infrastructure kullanan SaaS sistemlerinde "noisy neighbor" problemi kritik bir risktir. Bir tenant'ın aşırı kaynak tüketimi, diğer tenant'ların performansını olumsuz etkiler. Bu sistem, Laravel throttling üzerine ince bir policy katmanı ekleyerek tenant bazlı adil kaynak dağılımı sağlar.
+
+### Mimari Tasarım
+
+```
+Request → TenantIdentificationMiddleware → TenantResolver → Cache?
+                                                   ↓ miss
+                                                Database
+                                                   ↓
+                                            TenantContext DTO
+                                                   ↓
+                                          TenantManager (scoped)
+                                                   ↓
+                                          ThrottleRequests
+                                                   ↓
+                                          Rate Limiter Policy
+                                                   ↓
+                                              Controller
+```
+
+### Temel Özellikler
+
+| Özellik | Açıklama |
+|---------|----------|
+| **Tenant İzolasyonu** | Tenant A limit aşınca Tenant B etkilenmez |
+| **Tier-Based Limits** | Free ve Pro tenant'lar farklı kotalar alır |
+| **Route-Based Policy** | Read/Write endpoint'leri farklı limitlere tabi |
+| **Fail-Fast** | Tenant context yoksa 400/403 ile anında reddet |
+| **Cache-Aware Resolution** | DB yükünü azaltmak için read-through cache |
+
+### Rate Limit Politikaları
+
+| Policy | Tier | Limit | Kullanım |
+|--------|------|-------|----------|
+| `tenant.read` | Free | 60 req/min | GET endpoint'leri |
+| `tenant.read` | Pro | 300 req/min | GET endpoint'leri |
+| `tenant.write` | Free | 20 req/min | POST/PUT/DELETE |
+| `tenant.write` | Pro | 100 req/min | POST/PUT/DELETE |
+
+### Rate Limit Key Formatı
+```
+tenant:{tenant_id}:route:{route_name}
+```
+
+Bu format sayesinde:
+- Aynı tenant'ın farklı route'ları bağımsız sayılır
+- Farklı tenant'lar birbirini etkilemez
+
+### 429 Response Örneği
+```json
+{
+  "error": "Too Many Requests",
+  "message": "Tenant (free) request quota exceeded. Resource fairness policy activated."
+}
+```
+
+Response headers:
+- `Retry-After: <seconds>` - Tekrar deneme süresi
+- `X-RateLimit-Remaining: 0` - Kalan istek sayısı
+
+---
+
+## 🗄️ Tenant Context Caching
+
+### Problem: I/O Chokepoint
+Her HTTP isteğinde `Tenant::find()` çağrısı veritabanına sorgu atar. Yüksek RPS (Requests Per Second) altında bu, connection pool tükenmesine ve 502 Bad Gateway hatalarına yol açabilir.
+
+### Çözüm: Read-Through Cache Pattern
+
+```php
+// TenantResolver.php
+public function resolve(int $tenantId): ?TenantContext
+{
+    $cached = Cache::get("tenant_context:{$tenantId}");
+    
+    if ($cached !== null) {
+        return TenantContext::fromArray($cached);  // Cache hit
+    }
+
+    $tenant = Tenant::find($tenantId);              // Cache miss → DB
+    
+    Cache::put($cacheKey, $context->toArray(), 300); // 5 dk TTL
+    
+    return $context;
+}
+```
+
+### Cache Konfigürasyonu
+
+| Parametre | Değer | Açıklama |
+|-----------|-------|----------|
+| **Key Format** | `tenant_context:{id}` | Tenant başına ayrı cache key |
+| **TTL** | 300 saniye (5 dk) | Stale data riskini minimize eder |
+| **Invalidation** | Observer pattern | Tenant update/delete'te otomatik temizlenir |
+| **Driver** | Configurable | Redis, Memcached, file cache destekler |
+
+### Trade-off Analizi
+
+| Kazanç | Risk |
+|--------|------|
+| DB read load düşer | Stale tier bilgisi (5 dk max) |
+| Connection pool baskısı azalır | Inactive tenant cache'de aktif görünebilir |
+| Tenant lookup latency düşer | Cache invalidation karmaşıklığı |
+| Horizontal scaling kolaylaşır | Redis/Memcached bağımlılığı |
+
+### Invalidation Stratejisi
+```php
+// TenantObserver.php
+public function updated(Tenant $tenant): void
+{
+    $this->tenantResolver->invalidate($tenant->id);
+}
+
+public function deleted(Tenant $tenant): void
+{
+    $this->tenantResolver->invalidate($tenant->id);
+}
+```
+
+### Ne Zaman Cache Kullanmalı?
+
+✅ **Kullan:**
+- Aynı tenant için yoğun tekrar eden trafik varsa
+- Tenant verisi seyrek değişiyorsa (tier, active flag)
+- DB connection saturation başlıyorsa
+- Redis zaten kullanılıyorsa (rate limiter için)
+
+⚠️ **Dikkat:**
+- Tier değişikliklerinin anında yansıması kritikse TTL'i düşür
+- Cache miss oranı yüksekse fayda azalır
+- Distributed cache (Redis cluster) operasyonel maliyet getirir
+
+---
+
 ## [EN] Case Study: Scalable Multi-Tenant Architecture for B2B SaaS Systems
 
 **Project Overview:** This project is a foundational SaaS backend prototype designed to structurally reduce cross-tenant data leakage risk while serving multiple clients (Tenants) on a shared DB, shared schema relational infrastructure.
@@ -121,6 +258,7 @@ php artisan test --filter=Tenant -v
   ✓ TenantIdentificationMiddleware → it geçerli X-Tenant-ID ile istek başarılı olur
   ✓ TenantIdentificationMiddleware → it TenantManager container'dan doğru tenant ID ile resolve edilir
   ✓ TenantIdentificationMiddleware → it ardışık isteklerde tenant state sıfırlanır (scoped binding)
+  ✓ TenantIdentificationMiddleware → it aktif olmayan tenant için 403 Forbidden döner
 
    PASS  Tests\Feature\TenantScopeTest
   ✓ TenantScope - Veri İzolasyonu → it Tenant A sadece kendi projelerini görür
@@ -130,8 +268,27 @@ php artisan test --filter=Tenant -v
   ✓ TenantScope - Otomatik Tenant ID Ataması → it request body'de tenant_id gönderilmese bile doğru tenant atanır
   ✓ TenantScope - withoutGlobalScopes → it withoutGlobalScopes ile tüm projeler erişilebilir (admin senaryosu)
 
-  Tests:    15 passed (30 assertions)
-  Duration: 0.95s
+   PASS  Tests\Feature\TenantRateLimitTest
+  ✓ Tenant-Aware Rate Limiting → it tenant A limit aşınca tenant B etkilenmez (noisy-neighbor protection)
+  ✓ Tenant-Aware Rate Limiting → it free tenant ve pro tenant farklı limit alır
+  ✓ Tenant-Aware Rate Limiting → it aynı tenant için read ve write endpoint farklı limite sahip
+  ✓ Tenant-Aware Rate Limiting → it tenant context yoksa fail-fast davranışı korunur
+  ✓ Tenant-Aware Rate Limiting → it rate limit penceresi sıfırlanınca erişim geri gelir
+  ✓ Tenant-Aware Rate Limiting → it 429 response Retry-After header içerir
+
+   PASS  Tests\Feature\TenantResolverTest
+  ✓ TenantResolver → it ilk çağrıda DB'den okur ve cache'e yazar
+  ✓ TenantResolver → it ikinci çağrıda cache'den okur
+  ✓ TenantResolver → it olmayan tenant için null döner
+  ✓ TenantResolver → it invalidate() cache'i temizler
+  ✓ TenantResolver → it tenant update edilince cache invalidate olur
+  ✓ TenantContext DTO → it fromModel() doğru şekilde dönüşüm yapar
+  ✓ TenantContext DTO → it fromArray() doğru şekilde dönüşüm yapar
+  ✓ TenantContext DTO → it toArray() cache'e yazılabilir format döner
+  ✓ TenantContext DTO → it tier null gelirse free varsayılır
+
+  Tests:    31 passed (68 assertions)
+  Duration: 1.21s
 ```
 
 ### Test Kapsamı
@@ -139,8 +296,114 @@ php artisan test --filter=Tenant -v
 | Test Dosyası | Tür | Kapsam |
 |--------------|-----|--------|
 | `TenantManagerTest.php` | Unit | State yönetimi, RuntimeException (fail-fast) |
-| `TenantMiddlewareTest.php` | Feature | Header validasyonu, scoped binding izolasyonu |
+| `TenantMiddlewareTest.php` | Feature | Header validasyonu, scoped binding, inactive tenant |
 | `TenantScopeTest.php` | Feature | Veri izolasyonu, otomatik tenant_id, admin bypass |
+| `TenantRateLimitTest.php` | Feature | Noisy-neighbor protection, tier limits, policy isolation |
+| `TenantResolverTest.php` | Feature | Cache read-through, invalidation, DTO dönüşümleri |
+
+### Manuel Test Senaryoları (curl)
+
+API'yi manuel olarak test etmek için aşağıdaki curl komutlarını kullanabilirsiniz.
+
+#### 1. Temel Tenant Flow
+
+```bash
+# Tenant header olmadan istek → 400 Bad Request
+curl -i http://localhost:8000/api/projects
+
+# Geçerli tenant ile → 200 OK
+curl -i -H "X-Tenant-ID: 1" http://localhost:8000/api/projects
+
+# Olmayan tenant → 404 Not Found
+curl -i -H "X-Tenant-ID: 99999" http://localhost:8000/api/projects
+
+# Inactive tenant → 403 Forbidden
+curl -i -H "X-Tenant-ID: 2" http://localhost:8000/api/projects
+```
+
+#### 2. Rate Limit Test (Free Tier - 60 req/min)
+
+**Windows PowerShell:**
+```powershell
+# 65 istek at, 60. sonrasında 429 almalısın
+for ($i=1; $i -le 65; $i++) { 
+    Write-Host "Request $i"; 
+    curl -s -o NUL -w "%{http_code}" -H "X-Tenant-ID: 1" http://localhost:8000/api/projects 
+}
+```
+
+**Linux/Mac Bash:**
+```bash
+for i in {1..65}; do
+    echo "Request $i: $(curl -s -o /dev/null -w '%{http_code}' -H 'X-Tenant-ID: 1' http://localhost:8000/api/projects)"
+done
+```
+
+#### 3. Noisy Neighbor Protection Test
+
+```bash
+# Adım 1: Tenant 1'in limitini aş (65 istek)
+for ($i=1; $i -le 65; $i++) { 
+    curl -s -o NUL -H "X-Tenant-ID: 1" http://localhost:8000/api/projects 
+}
+
+# Adım 2: Tenant 2 hala çalışmalı!
+curl -i -H "X-Tenant-ID: 2" http://localhost:8000/api/projects
+# → 200 OK (Tenant 1'in limiti Tenant 2'yi etkilemez)
+```
+
+#### 4. Tier Farkını Gözlemleme
+
+```bash
+# Free tenant (tier='free'): 60 istek sonrası 429
+# Pro tenant (tier='pro'): 300 istek sonrası 429
+
+# DB'de tier değerini kontrol et:
+# UPDATE tenants SET tier = 'pro' WHERE id = 1;
+```
+
+#### 5. 429 Response Header'ları
+
+```bash
+# Limit aşıldıktan sonra response header'ları incele
+curl -i -H "X-Tenant-ID: 1" http://localhost:8000/api/projects
+
+# Beklenen response:
+# HTTP/1.1 429 Too Many Requests
+# Retry-After: 45
+# X-RateLimit-Remaining: 0
+```
+
+#### 6. Write Endpoint Rate Limit (POST - 20 req/min)
+
+```bash
+# Write endpoint'leri için limit daha düşük
+for ($i=1; $i -le 25; $i++) { 
+    curl -s -o NUL -w "%{http_code} " -X POST \
+         -H "X-Tenant-ID: 1" \
+         -H "Content-Type: application/json" \
+         -d '{"name": "Test Project"}' \
+         http://localhost:8000/api/projects
+}
+# 20. istekten sonra 429 almalısın
+```
+
+### PowerShell Test Script
+
+Kapsamlı rate limit testi için hazır PowerShell scripti:
+
+```powershell
+# Scripti çalıştır
+.\scripts\test-rate-limit.ps1
+
+# Parametrelerle çalıştır
+.\scripts\test-rate-limit.ps1 -TenantId 2 -MaxRequests 70
+
+# Farklı endpoint test et
+.\scripts\test-rate-limit.ps1 -Endpoint "http://localhost:8000/api/health"
+```
+
+Script dosyası: [scripts/test-rate-limit.ps1](scripts/test-rate-limit.ps1)
 
 ---
 
@@ -150,38 +413,56 @@ php artisan test --filter=Tenant -v
 app/
 ├── Http/
 │   ├── Controllers/
-│   │   └── ProjectsController.php    # Tenant-agnostic controller
+│   │   └── ProjectsController.php        # Tenant-agnostic controller
 │   └── Middleware/
-│       └── TenantIdentificationMiddleware.php  # Fail-fast header validasyonu
+│       └── TenantIdentificationMiddleware.php  # Fail-fast + resolver integration
 ├── Models/
-│   ├── Project.php                   # Global Scope + auto tenant_id
-│   ├── Tenant.php
+│   ├── Project.php                       # Global Scope + auto tenant_id
+│   ├── Tenant.php                        # tier field eklendi
 │   └── Scopes/
-│       └── TenantScope.php           # Eloquent Global Scope
+│       └── TenantScope.php               # Eloquent Global Scope
+├── Observers/
+│   └── TenantObserver.php                # Cache invalidation on update/delete
 ├── Providers/
-│   └── TenantProvider.php            # Scoped binding konfigürasyonu
+│   ├── AppServiceProvider.php            # Rate limiter policies + observer registration
+│   └── TenantProvider.php                # Scoped binding konfigürasyonu
 └── Services/
-    └── TenantManager.php             # Request-scoped state container
+    ├── TenantManager.php                 # Request-scoped state container (DTO-based)
+    └── Tenant/
+        ├── TenantContext.php             # Immutable DTO for tenant metadata
+        └── TenantResolver.php            # Cache-aware tenant resolution
+
+routes/
+└── api.php                               # Rate limited endpoints
+
+bootstrap/
+└── app.php                               # Middleware priority + api group config
+
+scripts/
+└── test-rate-limit.ps1                   # PowerShell rate limit test script
 ```
 
 ---
 
 ## 📋 Roadmap / TODO
 
-Sonraki aşamada uygulanabilecek tenant stratejisi geliştirmeleri:
+### ✅ Tamamlanan Özellikler
 
-- [ ] **Tenant Validation** - Middleware'de veritabanı doğrulaması (`is_active` kontrolü, 403 Forbidden)
+- [x] **Tenant Validation** - Middleware'de veritabanı doğrulaması (`is_active` kontrolü, 403 Forbidden)
+- [x] **Tenant Cache** - Read-through cache pattern ile tenant metadata önbellekleme
+- [x] **Tenant-Aware Rate Limiting** - Tier bazlı request quota, noisy-neighbor protection
+- [x] **TenantResolver Pattern** - Cache-aware tenant çözümleme katmanı
+- [x] **TenantContext DTO** - Immutable tenant metadata taşıyıcı
+- [x] **Cache Invalidation** - Observer pattern ile otomatik cache temizleme
+
+### 📋 Sonraki Aşama
+
 - [ ] **BelongsToTenant Trait** - Global Scope ve auto-assign mantığını trait ile genelleştir
 - [ ] **Subdomain Tenant Tespiti** - `tenants.domain` alanı ile subdomain bazlı routing
 - [ ] **Admin Bypass Scope** - Super-admin için `withoutGlobalScopes` otomasyonu
-- [ ] **Tenant Cache** - `Cache::remember()` ile tenant bilgisi önbellekleme
 - [ ] **Queue/Job İzolasyonu** - Asenkron job'larda tenant context taşıma
 - [ ] **Audit Trail** - Tenant bazlı veri değişiklik logları
+- [ ] **Rate Limit Dashboard** - Tenant quota kullanım metrikleri
 
 ---
 
-![alt text](image.png)
-
-![alt text](image-1.png)
-
-![alt text](image-2.png)
