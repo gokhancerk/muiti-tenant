@@ -162,6 +162,20 @@ app/
 
 ---
 
+## 📋 Roadmap / TODO
+
+Sonraki aşamada uygulanabilecek tenant stratejisi geliştirmeleri:
+
+- [ ] **Tenant Validation** - Middleware'de veritabanı doğrulaması (`is_active` kontrolü, 403 Forbidden)
+- [ ] **BelongsToTenant Trait** - Global Scope ve auto-assign mantığını trait ile genelleştir
+- [ ] **Subdomain Tenant Tespiti** - `tenants.domain` alanı ile subdomain bazlı routing
+- [ ] **Admin Bypass Scope** - Super-admin için `withoutGlobalScopes` otomasyonu
+- [ ] **Tenant Cache** - `Cache::remember()` ile tenant bilgisi önbellekleme
+- [ ] **Queue/Job İzolasyonu** - Asenkron job'larda tenant context taşıma
+- [ ] **Audit Trail** - Tenant bazlı veri değişiklik logları
+
+---
+
 ![alt text](image.png)
 
 ![alt text](image-1.png)
