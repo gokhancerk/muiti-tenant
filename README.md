@@ -3,10 +3,10 @@
 
 ## [TR] Vaka Çalışması: B2B SaaS Sistemlerinde Ölçeklenebilir Çoklu Kiracı (Multi-Tenant) Mimarisi
 
-**Proje Özeti:** Bu proje, tek bir ilişkisel veritabanı altyapısı (shared DB, shared schema) üzerinden birden fazla müşteriye (Tenant) sıfır veri sızıntısı (Zero Data Leak) garantisiyle hizmet sunan bir SaaS backend mimarisi prototipidir.
+**Proje Özeti:** Bu proje, tek bir ilişkisel veritabanı altyapısı (shared DB, shared schema) üzerinden birden fazla müşteriye (Tenant) hizmet sunan ve çapraz tenant veri sızıntısı riskini yapısal olarak azaltmayı hedefleyen bir SaaS backend mimarisi prototipidir.
 
 ### Problem Tanımı ve Sistem Kısıtlamaları
-Büyüme evresindeki B2B SaaS platformlarının karşılaştığı en büyük teknik darboğaz, müşteri verilerinin birbirine karışmasıdır. İzolasyonun Controller seviyesinde manuel `where('tenant_id', $id)` sorgularıyla yapılması, insan hatasına açık (error-prone) bir yapıdır ve katastrofik güvenlik ihlallerine zemin hazırlar. Ayrıca, uzun süre çalışan (long-running) sunucu mimarilerinde (örn: Laravel Octane), statik veya singleton nesnelerin kullanımı "State Pollution" (Veri Kirliliği) yaratır.
+Özellikle shared infrastructure kullanan B2B SaaS platformlarında kritik risklerden biri, müşteri verilerinin birbirine karışmasıdır. İzolasyonun Controller seviyesinde manuel `where('tenant_id', $id)` sorgularıyla yapılması, insan hatasına açık (error-prone) bir yapıdır ve ciddi güvenlik ihlallerine zemin hazırlar. Ayrıca, uzun süre çalışan (long-running) sunucu mimarilerinde (örn: Laravel Octane), statik veya singleton nesnelerin kullanımı "State Pollution" (Veri Kirliliği) yaratabilir.
 
 ### Mimari Çözüm ve Birinci Prensipler
 Bu proje, insan hatasını sistem tasarımı ile geçersiz kılmak (override) amacıyla üç katmanlı bir savunma hattı inşa etmiştir:
@@ -25,10 +25,10 @@ Bu proje, insan hatasını sistem tasarımı ile geçersiz kılmak (override) am
 
 ## [EN] Case Study: Scalable Multi-Tenant Architecture for B2B SaaS Systems
 
-**Project Overview:** This project is a foundational SaaS backend prototype that provides zero data leak isolation for multiple clients (Tenants) utilizing a shared DB, shared schema relational infrastructure.
+**Project Overview:** This project is a foundational SaaS backend prototype designed to structurally reduce cross-tenant data leakage risk while serving multiple clients (Tenants) on a shared DB, shared schema relational infrastructure.
 
 ### Problem Statement and System Constraints
-The most critical bottleneck for scaling B2B SaaS platforms is the risk of cross-tenant data contamination. Relying on manual `where('tenant_id', $id)` clauses at the Controller level introduces human error and creates severe security vulnerabilities. Furthermore, in long-running server architectures (e.g., Laravel Octane), improper state management via static variables or singletons inevitably leads to catastrophic State Pollution.
+One of the critical risks in B2B SaaS platforms—especially those using shared infrastructure—is cross-tenant data contamination. Relying on manual `where('tenant_id', $id)` clauses at the Controller level introduces human error and creates serious security vulnerabilities. Furthermore, in long-running server architectures (e.g., Laravel Octane), improper state management via static variables or singletons can lead to State Pollution.
 
 ### Architectural Solution and First Principles
 This project implements a three-layered defense mechanism to systematically override human error:
