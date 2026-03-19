@@ -12,12 +12,14 @@ Büyüme evresindeki B2B SaaS platformlarının karşılaştığı en büyük te
 Bu proje, insan hatasını sistem tasarımı ile geçersiz kılmak (override) amacıyla üç katmanlı bir savunma hattı inşa etmiştir:
 
 * **Fail-Fast (Erken Çıkış) ve Kesin Tespiti:** Kiracı tespiti `X-Tenant-ID` HTTP başlığı üzerinden yapılır. Uygulama, isteği iş mantığına ulaştırmadan önce özel bir Middleware katmanında keser. Geçersiz veya eksik başlıklar anında 400 Bad Request ile reddedilerek gereksiz I/O ve işlemci döngüsü (CPU cycle) israfı önlenir.
-* **Bellek İzolasyonu ve RAM Optimizasyonu:** Tespit edilen kiracı durumu (state), Laravel IoC (Service Container) üzerinde `scoped` (istek bazlı tekil) nesne olarak örneklendirilir. Bu karar, uygulamanın geleneksel PHP-FPM dışında Swoole/RoadRunner gibi yüksek RPS'li ortamlarda çalıştırılması durumunda yaşanacak bellek sızıntılarını (memory leaks) mimari seviyede engeller.
+* **Bellek İzolasyonu:** Tespit edilen kiracı durumu (state), Laravel IoC (Service Container) üzerinde `scoped` (istek bazlı tekil) nesne olarak örneklendirilir. Bu tasarım, uzun ömürlü worker ortamlarında (Swoole/RoadRunner) istek bazlı state sızıntısı (request state leakage) riskini azaltır ve bu tarz çalışma zamanlarıyla uyumlu bir mimari sunar.
 * **Otonom Veri İzolasyonu (Defensive Programming):** Controller katmanı, çoklu kiracı yapısından tamamen habersiz (ignorant) bırakılmıştır. Veritabanı sorgularına kiracı filtresi enjekte etme işlemi, Eloquent ORM motoruna entegre edilen "Global Scopes" aracılığıyla otonom olarak gerçekleştirilir. 
 
 ### İş Değeri ve Kaldıraç (Business Impact)
-* **Risk Yönetimi:** Çapraz kiracı veri sızıntısı (Cross-tenant data leak) riski, mimari seviyede yapısal olarak minimize edilmiştir. Global Scope, Middleware ve Scoped Binding katmanları, insan hatasından kaynaklanan sızıntı olasılığını önemli ölçüde azaltacak şekilde tasarlanmıştır.
-* **Operasyonel Çeviklik:** İş mantığı nesneleri (Services) ile veri taşıma nesneleri (DTOs) arasındaki sıkı bağlılık (tight coupling), Dependency Injection ile çözülmüştür. Sisteme yeni bir müşteri ekleme (onboarding) maliyeti minimize edilmiştir.
+* **Merkezi Tenant Zorlaması:** Kiracı filtreleme mantığı tek bir noktada (Global Scope) merkezileştirilmiştir.
+* **Controller Yükü Kaldırıldı:** Controller katmanından manuel `where('tenant_id')` filtreleme sorumluluğu tamamen çıkarılmıştır.
+* **Test Edilebilirlik:** Tenant sınırlarının (boundary) test edilmesi kolaylaştırılmıştır.
+* **Unutma Hataları Azaltıldı:** Geliştiricinin tenant filtresi eklemeyi unutmasından kaynaklanan hata riski (omission bugs) azaltılmıştır.
 
 ---
 
@@ -32,12 +34,14 @@ The most critical bottleneck for scaling B2B SaaS platforms is the risk of cross
 This project implements a three-layered defense mechanism to systematically override human error:
 
 * **Fail-Fast Identification:** Tenant identification is strictly enforced via the `X-Tenant-ID` HTTP header. A dedicated Middleware intercepts the request before it hits the application router. Invalid or missing headers trigger an immediate 400 Bad Request, effectively preventing unnecessary I/O and CPU cycle waste.
-* **Memory Isolation and RAM Optimization:** The resolved tenant state is bound to the Laravel IoC (Service Container) as a `scoped` instance. This specific architectural decision guarantees that the application is natively ready for high-RPS environments like Swoole/RoadRunner, completely eliminating memory leaks and state bleeding between requests.
+* **Memory Isolation:** The resolved tenant state is bound to the Laravel IoC (Service Container) as a `scoped` instance. This design avoids request state leakage risks in long-lived worker environments (Swoole/RoadRunner) and keeps the architecture compatible with such runtime considerations.
 * **Autonomous Data Isolation (Defensive Programming):** The Controller layer remains entirely ignorant of the multi-tenant context. The enforcement of tenant filters on database queries is handled autonomously by integrating "Global Scopes" directly into the Eloquent ORM engine.
 
 ### Business Impact and Leverage
-* **Risk Management:** The risk of cross-tenant data leaks is structurally mitigated at the architectural level. Global Scopes, Middleware, and Scoped Binding layers are designed to substantially reduce the probability of human-error induced data contamination.
-* **Operational Agility:** Tight coupling between business logic (Services) and data structures (DTOs) is eliminated via strict Dependency Injection. The engineering cost of onboarding new tenants or expanding the feature set is significantly minimized.
+* **Centralized Tenant Enforcement:** Tenant filtering logic is centralized in a single location (Global Scope).
+* **Controller-Level Burden Removed:** Manual `where('tenant_id')` filtering responsibility is completely removed from the Controller layer.
+* **Improved Testability:** Testing of tenant boundaries becomes straightforward and isolated.
+* **Reduced Omission Bug Risk:** The risk of developers forgetting to add tenant filters is structurally reduced.
 
 ---
 
