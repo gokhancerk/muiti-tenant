@@ -40,6 +40,128 @@ This project implements a three-layered defense mechanism to systematically over
 * **Operational Agility:** Tight coupling between business logic (Services) and data structures (DTOs) is eliminated via strict Dependency Injection. The engineering cost of onboarding new tenants or expanding the feature set is significantly minimized.
 
 ---
+
+## 🚀 Kurulum ve Çalıştırma
+
+### Gereksinimler
+- PHP 8.2+
+- Composer
+- PostgreSQL / MySQL / SQLite
+- Node.js (Vite için)
+
+### Kurulum
+
+```bash
+# Bağımlılıkları yükle
+composer install
+npm install
+
+# Ortam dosyasını oluştur
+cp .env.example .env
+php artisan key:generate
+
+# Veritabanı migration
+php artisan migrate
+
+# Geliştirme sunucusunu başlat
+php artisan serve
+```
+
+### API Kullanımı
+
+Tüm `/api/*` endpoint'leri `X-Tenant-ID` header'ı gerektirir:
+
+```bash
+# Projeleri listele (Tenant ID: 1)
+curl -H "X-Tenant-ID: 1" http://localhost:8000/api/projects
+
+# Yeni proje oluştur
+curl -X POST -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d '{"name": "My Project", "description": "Test"}' \
+  http://localhost:8000/api/projects
+
+# Header olmadan istek → 400 Bad Request
+curl http://localhost:8000/api/projects
+# {"error": "Access Denied: X-Tenant-ID header missing"}
+```
+
+---
+
+## 🧪 Testler
+
+### Testleri Çalıştırma
+
+```bash
+# Tüm testleri çalıştır
+php artisan test
+
+# Sadece tenant testleri
+php artisan test --filter=Tenant
+
+# Verbose çıktı ile
+php artisan test --filter=Tenant -v
+```
+
+### Test Sonuçları
+
+```
+   PASS  Tests\Unit\TenantManagerTest
+  ✓ TenantManager → it başlangıçta tenant ID olmadan oluşturulur
+  ✓ TenantManager → it tenant ID set edilebilir
+  ✓ TenantManager → it tenant ID olmadan getTenantId çağrılınca RuntimeException fırlatır
+  ✓ TenantManager → it birden fazla kez set edildiğinde son değeri döner
+
+   PASS  Tests\Feature\TenantMiddlewareTest
+  ✓ TenantIdentificationMiddleware → it X-Tenant-ID header yoksa 400 Bad Request döner
+  ✓ TenantIdentificationMiddleware → it X-Tenant-ID header boş ise 400 Bad Request döner
+  ✓ TenantIdentificationMiddleware → it geçerli X-Tenant-ID ile istek başarılı olur
+  ✓ TenantIdentificationMiddleware → it TenantManager container'dan doğru tenant ID ile resolve edilir
+  ✓ TenantIdentificationMiddleware → it ardışık isteklerde tenant state sıfırlanır (scoped binding)
+
+   PASS  Tests\Feature\TenantScopeTest
+  ✓ TenantScope - Veri İzolasyonu → it Tenant A sadece kendi projelerini görür
+  ✓ TenantScope - Veri İzolasyonu → it Tenant B sadece kendi projelerini görür
+  ✓ TenantScope - Veri İzolasyonu → it çapraz tenant veri sızıntısı (cross-tenant leak) mümkün değildir
+  ✓ TenantScope - Otomatik Tenant ID Ataması → it yeni proje oluştururken tenant_id otomatik atanır
+  ✓ TenantScope - Otomatik Tenant ID Ataması → it request body'de tenant_id gönderilmese bile doğru tenant atanır
+  ✓ TenantScope - withoutGlobalScopes → it withoutGlobalScopes ile tüm projeler erişilebilir (admin senaryosu)
+
+  Tests:    15 passed (30 assertions)
+  Duration: 0.95s
+```
+
+### Test Kapsamı
+
+| Test Dosyası | Tür | Kapsam |
+|--------------|-----|--------|
+| `TenantManagerTest.php` | Unit | State yönetimi, RuntimeException (fail-fast) |
+| `TenantMiddlewareTest.php` | Feature | Header validasyonu, scoped binding izolasyonu |
+| `TenantScopeTest.php` | Feature | Veri izolasyonu, otomatik tenant_id, admin bypass |
+
+---
+
+## 📁 Proje Yapısı
+
+```
+app/
+├── Http/
+│   ├── Controllers/
+│   │   └── ProjectsController.php    # Tenant-agnostic controller
+│   └── Middleware/
+│       └── TenantIdentificationMiddleware.php  # Fail-fast header validasyonu
+├── Models/
+│   ├── Project.php                   # Global Scope + auto tenant_id
+│   ├── Tenant.php
+│   └── Scopes/
+│       └── TenantScope.php           # Eloquent Global Scope
+├── Providers/
+│   └── TenantProvider.php            # Scoped binding konfigürasyonu
+└── Services/
+    └── TenantManager.php             # Request-scoped state container
+```
+
+---
+
 ![alt text](image.png)
 
 ![alt text](image-1.png)
